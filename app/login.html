@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Вход — Диаризация</title>
+<style>
+  :root { --bg:#0f1420; --card:#172033; --input:#0e1626; --muted:#8aa0c0; --fg:#e7eefc; --acc:#4f8cff; --line:#26324a; }
+  * { box-sizing:border-box; }
+  body { margin:0; min-height:100vh; display:flex; align-items:center; justify-content:center;
+    background:var(--bg); color:var(--fg); font:15px/1.5 -apple-system,Segoe UI,Roboto,Arial,sans-serif; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:28px; width:340px; }
+  h1 { font-size:18px; margin:0 0 18px; }
+  label { display:block; font-size:13px; color:var(--muted); margin:12px 0 6px; }
+  input { width:100%; padding:10px 12px; background:var(--input); color:var(--fg); border:1px solid var(--line); border-radius:8px; font-size:14px; }
+  button { width:100%; margin-top:20px; background:var(--acc); color:#fff; border:0; padding:11px; border-radius:8px; font-size:15px; font-weight:600; cursor:pointer; }
+  .err { color:#ff7a7a; font-size:13px; margin-top:12px; display:none; }
+</style>
+</head>
+<body>
+  <form class="card" method="post" action="/login">
+    <h1>🎙️ Диаризация — вход</h1>
+    <label>Логин</label>
+    <input name="username" autocomplete="username" autofocus>
+    <label>Пароль</label>
+    <input name="password" type="password" autocomplete="current-password">
+    <button type="submit">Войти</button>
+    <div class="err" id="err">Неверный логин или пароль</div>
+  </form>
+  <script>if (location.search.indexOf('e=1') >= 0) document.getElementById('err').style.display='block';</script>
+</body>
+</html>

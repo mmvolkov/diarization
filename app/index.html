@@ -33,7 +33,11 @@
   .sec h2 { font-size:15px; margin:0 0 8px; color:var(--acc); border-bottom:1px solid var(--line); padding-bottom:6px; }
   pre.transcript { white-space:pre-wrap; word-break:break-word; max-height:420px; overflow:auto;
     background:var(--input); border:1px solid var(--line); border-radius:8px; padding:12px; font-size:13px; margin:0; }
-  .md ul { margin:6px 0; padding-left:22px; } .md li { margin:3px 0; } .md p { margin:6px 0; }
+  .md ul { list-style:none; margin:6px 0; padding-left:0; }
+  .md ul ul { padding-left:18px; }                 /* вложенные подпункты — отступ вправо */
+  .md li { position:relative; padding-left:16px; margin:3px 0; }
+  .md li::before { content:"-"; position:absolute; left:2px; color:var(--muted); }
+  .md p { margin:6px 0; }
   .hint { font-size:12px; color:var(--muted); margin-top:6px; }
   .bar { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
   .spk { display:flex; gap:12px; flex-wrap:wrap; }
@@ -48,16 +52,13 @@
       <h1>🎙️ Диаризация совещаний и звонков</h1>
       <p class="sub">Загрузите аудио/видео — транскрипт «кто и когда», саммари, follow-up и to-do.</p>
     </div>
-    <button class="icon" id="themeBtn" title="Сменить тему">☀️</button>
+    <div class="bar">
+      <a href="/logout" class="ghost" style="text-decoration:none">Выйти</a>
+      <button class="icon" id="themeBtn" title="Сменить тему">☀️</button>
+    </div>
   </div>
 
   <div class="card">
-    <div style="margin-bottom:14px">
-      <label>API-ключ</label>
-      <input type="password" id="key" placeholder="di_..." autocomplete="off">
-      <div class="hint">Хранится только в этом браузере (localStorage).</div>
-    </div>
-
     <div style="margin-bottom:14px">
       <label>Файл (mp3, wav, m4a, mp4 …)</label>
       <input type="file" id="file" accept="audio/*,video/*">
@@ -107,23 +108,33 @@ function setTheme(t){ document.body.classList.toggle('light', t==='light'); loca
 setTheme(localStorage.getItem('diar_theme') || 'dark');
 $('themeBtn').onclick = () => setTheme(document.body.classList.contains('light') ? 'dark' : 'light');
 
-$('key').value = localStorage.getItem('diar_key') || '';
-
 let RES = null;     // ответ сервера
 let MAP = {};       // SPEAKER_xx -> имя
 let showTs = true;  // показывать тайм-коды в выводе
 
 function esc(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 function md(s){
+  // Вложенные списки: уровень по отступу (2 пробела = уровень). Маркер задаётся в CSS.
   const lines = esc(s).replace(/\*\*(.+?)\*\*/g,'<strong>$1</strong>').split('\n');
-  let out=[], inUl=false;
+  let html=''; const stack=[];   // ширины отступов открытых <ul>
   for(const ln of lines){
-    const m = ln.match(/^\s*[-•*]\s+(.*)$/);
-    if(m){ if(!inUl){out.push('<ul>');inUl=true;} out.push('<li>'+m[1]+'</li>'); }
-    else { if(inUl){out.push('</ul>');inUl=false;} if(ln.trim()) out.push('<p>'+ln+'</p>'); }
+    const m = ln.match(/^(\s*)[-•*]\s+(.*)$/);
+    if(m){
+      const indent = m[1].replace(/\t/g,'  ').length;
+      if(stack.length===0){ html+='<ul>'; stack.push(indent); }
+      else {
+        while(stack.length>1 && indent < stack[stack.length-1]){ html+='</li></ul>'; stack.pop(); }
+        if(indent > stack[stack.length-1]){ html+='<ul>'; stack.push(indent); }
+        else { html+='</li>'; }
+      }
+      html+='<li>'+m[2];
+    } else {
+      while(stack.length){ html+='</li></ul>'; stack.pop(); }
+      if(ln.trim()) html+='<p>'+ln+'</p>';
+    }
   }
-  if(inUl) out.push('</ul>');
-  return out.join('');
+  while(stack.length){ html+='</li></ul>'; stack.pop(); }
+  return html;
 }
 function section(title, html){ return '<div class="card sec"><h2>'+title+'</h2><div class="md">'+html+'</div></div>'; }
 
@@ -185,10 +196,8 @@ function render(){
 
 let timer = null;
 $('go').onclick = async () => {
-  const key = $('key').value.trim();
   const file = $('file').files[0];
   if(!file){ $('status').innerHTML = '<span class="err">Выберите файл</span>'; return; }
-  localStorage.setItem('diar_key', key);
   showTs = $('timestamps').checked;
   MAP = {};
 
@@ -205,7 +214,7 @@ $('go').onclick = async () => {
   timer = setInterval(() => { $('status').textContent = 'Обработка… ' + Math.round((Date.now()-t0)/1000) + ' с'; }, 500);
 
   try {
-    const r = await fetch('/v1/diarize', { method:'POST', headers: key ? {'Authorization':'Bearer '+key} : {}, body: fd });
+    const r = await fetch('/v1/diarize', { method:'POST', body: fd });  // сессия в cookie
     clearInterval(timer);
     if(!r.ok){
       let d=''; try{ d=(await r.json()).detail; }catch(e){ d=r.statusText; }

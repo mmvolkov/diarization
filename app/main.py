@@ -16,9 +16,11 @@ import time
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, PlainTextResponse
+from fastapi.responses import FileResponse, PlainTextResponse, RedirectResponse
 
-from app import asr, llm, pipeline
+from app import asr, auth, llm, pipeline
+
+_APP = Path(__file__).parent
 
 VERSION = "0.1.0"
 
@@ -65,17 +67,24 @@ def _load_api_keys() -> set[str] | None:
 
 
 async def verify_auth(request: Request) -> None:
-    keys = _load_api_keys()
-    if keys is None:  # ключи не заданы — auth отключён
+    # 1) сессия (cookie) — для браузера после логина
+    if auth.enabled() and auth.valid_token(request.cookies.get(auth.COOKIE)):
         return
-    token = None
-    auth_header = request.headers.get("Authorization", "")
-    if auth_header.startswith("Bearer "):
-        token = auth_header[7:]
-    if token is None:
-        token = request.headers.get("X-API-Key")
-    if not token or token not in keys:
-        raise HTTPException(status_code=401, detail="Invalid or missing API key")
+    # 2) API-ключ (Bearer / X-API-Key) — для curl/SDK
+    keys = _load_api_keys()
+    if keys is not None:
+        token = None
+        h = request.headers.get("Authorization", "")
+        if h.startswith("Bearer "):
+            token = h[7:]
+        if token is None:
+            token = request.headers.get("X-API-Key")
+        if token and token in keys:
+            return
+    # 3) ничего не настроено — открытый доступ (как раньше)
+    if keys is None and not auth.enabled():
+        return
+    raise HTTPException(status_code=401, detail="Invalid or missing credentials")
 
 
 def _mmss(sec: float) -> str:
@@ -105,9 +114,33 @@ def _startup() -> None:
 
 
 @app.get("/", include_in_schema=False)
-async def index():
-    # Простой веб-интерфейс (загрузка файла + опции постобработки). Отдаётся на корне домена.
-    return FileResponse(Path(__file__).parent / "index.html")
+async def index(request: Request):
+    # Простой веб-интерфейс. Если включён логин — требуем сессию.
+    if auth.enabled() and not auth.valid_token(request.cookies.get(auth.COOKIE)):
+        return RedirectResponse("/login", status_code=302)
+    return FileResponse(_APP / "index.html")
+
+
+@app.get("/login", include_in_schema=False)
+async def login_page():
+    return FileResponse(_APP / "login.html")
+
+
+@app.post("/login", include_in_schema=False)
+async def login_submit(username: str = Form(""), password: str = Form("")):
+    if auth.check_credentials(username, password):
+        resp = RedirectResponse("/", status_code=302)
+        resp.set_cookie(auth.COOKIE, auth.make_token(), max_age=auth.SESSION_TTL,
+                        httponly=True, secure=True, samesite="lax", path="/")
+        return resp
+    return RedirectResponse("/login?e=1", status_code=302)
+
+
+@app.get("/logout", include_in_schema=False)
+async def logout():
+    resp = RedirectResponse("/login", status_code=302)
+    resp.delete_cookie(auth.COOKIE, path="/")
+    return resp
 
 
 @app.get("/health")

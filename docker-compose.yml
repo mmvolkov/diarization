@@ -1,0 +1,23 @@
+services:
+  diarization:
+    build: .
+    image: diarization:local
+    container_name: diarization
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "${DIARIZE_PORT:-8124}:8000"
+    volumes:
+      - diarization_models:/models
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health').status==200 else 1)"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 180s
+
+# GPU:   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d --build
+# Домен: docker compose -f docker-compose.yml -f docker-compose.gpu.yml -f docker-compose.traefik.yml up -d --build
+
+volumes:
+  diarization_models:

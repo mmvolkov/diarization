@@ -1,0 +1,10 @@
+# Общие зависимости. torch/torchaudio и onnxruntime(-gpu) ставятся в Dockerfile
+# (разные для CPU/GPU), поэтому здесь их нет.
+onnx-asr>=0.11.0
+huggingface-hub>=0.27.0
+fastapi>=0.115.0
+uvicorn[standard]>=0.32.0
+python-multipart>=0.0.12
+pyannote.audio==4.0.5
+soundfile>=0.12.1
+numpy>=1.26.0

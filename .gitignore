@@ -1,0 +1,29 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Secrets
+.env
+.etc/
+
+# Локальные заметки (дублируются в Obsidian vault; содержат инфраструктурные детали — не в git)
+notes/
+
+# Локальный тулинг / исследовательские артефакты / PoC-черновики
+.claude/
+poc_*.py
+*.url
+*.pdf
+
+# Models / data / audio
+models/
+data/
+*.wav
+*.mp3
+*.m4a
+*.ogg
+*.flac
+
+# etc
+.etc/

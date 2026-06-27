@@ -1,0 +1,16 @@
+# GPU-overlay. Использовать вместе с базовым compose:
+#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d --build
+# На хосте нужны: NVIDIA-драйвер + nvidia-container-toolkit.
+services:
+  diarization:
+    build:
+      context: .
+      dockerfile: Dockerfile.gpu
+    image: diarization:gpu
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]

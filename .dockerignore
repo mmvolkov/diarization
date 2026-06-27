@@ -1,0 +1,10 @@
+.git/
+.venv/
+data/
+models/
+notes/
+poc_*.py
+*.md
+.env
+__pycache__/
+*.pyc

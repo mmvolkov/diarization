@@ -1,0 +1,23 @@
+# Overlay: публикация diarization через существующий Traefik на домен
+#   diarization.cloudsmasters.ru  (TLS via Let's Encrypt).
+#
+# Запуск на сервере (где есть сеть dedicated_server_default — сеть Traefik основного стека):
+#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml -f docker-compose.traefik.yml up -d --build
+
+services:
+  diarization:
+    networks:
+      - default
+      - webproxy
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=dedicated_server_default
+      - traefik.http.routers.diarization.rule=Host(`diarization.cloudsmasters.ru`)
+      - traefik.http.routers.diarization.entrypoints=websecure
+      - traefik.http.routers.diarization.tls.certresolver=letsencrypt
+      - traefik.http.services.diarization.loadbalancer.server.port=8000
+
+networks:
+  webproxy:
+    external: true
+    name: dedicated_server_default

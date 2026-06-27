@@ -8,11 +8,11 @@ RUN apt-get update \
 
 WORKDIR /app
 
+# Тяжёлые слои отдельно и ДО requirements.txt (кеш не сбрасывается мелкими зависимостями).
+RUN pip install --no-cache-dir torch torchaudio --index-url https://download.pytorch.org/whl/cpu
+RUN pip install --no-cache-dir onnxruntime
 COPY requirements.txt .
-# torch CPU + onnxruntime CPU, затем общие зависимости (pyannote увидит torch установленным)
-RUN pip install --no-cache-dir torch torchaudio --index-url https://download.pytorch.org/whl/cpu \
-    && pip install --no-cache-dir onnxruntime \
-    && pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
 
 COPY app ./app
 

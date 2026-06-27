@@ -16,7 +16,7 @@ import time
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, PlainTextResponse, RedirectResponse
+from fastapi.responses import FileResponse, PlainTextResponse, RedirectResponse, Response
 
 from app import asr, auth, llm, pipeline
 
@@ -163,6 +163,18 @@ async def list_models():
     }
 
 
+@app.post("/v1/export/docx", dependencies=[Depends(verify_auth)])
+async def export_docx(request: Request):
+    from app import export
+    data = await request.json()
+    content = export.build_docx(data)
+    return Response(
+        content,
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        headers={"Content-Disposition": 'attachment; filename="diarization.docx"'},
+    )
+
+
 @app.post("/v1/diarize", dependencies=[Depends(verify_auth)])
 async def diarize_endpoint(
     file: UploadFile = File(...),
@@ -221,9 +233,10 @@ async def diarize_endpoint(
         if (summary or follow_up or todo) else {}
 
     if rf == "text":
-        body = text
+        parts = []
         for key, title in (("summary", "САММАРИ"), ("follow_up", "FOLLOW-UP"), ("todo", "TO-DO")):
             if key in analysis:
-                body += f"\n\n===== {title} =====\n{analysis[key]}"
-        return PlainTextResponse(body)
-    return {"segments": utts, "text": text, **analysis}
+                parts.append(f"===== {title} =====\n{analysis[key]}")
+        parts.append(f"===== ТРАНСКРИПТ =====\n{text}")
+        return PlainTextResponse("\n\n".join(parts))
+    return {**analysis, "segments": utts, "text": text}

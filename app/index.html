@@ -38,6 +38,18 @@
   .md li { position:relative; padding-left:16px; margin:3px 0; }
   .md li::before { content:"-"; position:absolute; left:2px; color:var(--muted); }
   .md p { margin:6px 0; }
+  /* Саммари: у заголовков верхнего уровня маркера нет (подпункты — с «-») */
+  .md.sum > ul > li { padding-left:0; }
+  .md.sum > ul > li::before { content:none; }
+  /* Follow-up: нумерация */
+  .md.fu ol { list-style:decimal; margin:6px 0; padding-left:26px; }
+  .md.fu li { padding-left:0; margin:4px 0; }
+  .md.fu li::before { content:none; }
+  /* To-do: таблица */
+  table.todo { width:100%; border-collapse:collapse; font-size:14px; }
+  table.todo th, table.todo td { border:1px solid var(--line); padding:7px 10px; text-align:left; vertical-align:top; }
+  table.todo th { color:var(--acc); background:var(--input); font-weight:600; }
+  table.todo td.num { text-align:center; color:var(--muted); width:46px; }
   .hint { font-size:12px; color:var(--muted); margin-top:6px; }
   .bar { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
   .spk { display:flex; gap:12px; flex-wrap:wrap; }
@@ -113,30 +125,60 @@ let MAP = {};       // SPEAKER_xx -> имя
 let showTs = true;  // показывать тайм-коды в выводе
 
 function esc(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
-function md(s){
-  // Вложенные списки: уровень по отступу (2 пробела = уровень). Маркер задаётся в CSS.
+function md(s, listTag){
+  // Вложенные списки (отступ 2 пробела = уровень) + абзацы. listTag: 'ul' (по умолч.) или 'ol'.
+  const T = listTag || 'ul';
+  const open = '<'+T+'>', closeli = '</li></'+T+'>';
   const lines = esc(s).replace(/\*\*(.+?)\*\*/g,'<strong>$1</strong>').split('\n');
-  let html=''; const stack=[];   // ширины отступов открытых <ul>
+  let html=''; const stack=[];
   for(const ln of lines){
     const m = ln.match(/^(\s*)[-•*]\s+(.*)$/);
     if(m){
       const indent = m[1].replace(/\t/g,'  ').length;
-      if(stack.length===0){ html+='<ul>'; stack.push(indent); }
+      if(stack.length===0){ html+=open; stack.push(indent); }
       else {
-        while(stack.length>1 && indent < stack[stack.length-1]){ html+='</li></ul>'; stack.pop(); }
-        if(indent > stack[stack.length-1]){ html+='<ul>'; stack.push(indent); }
+        while(stack.length>1 && indent < stack[stack.length-1]){ html+=closeli; stack.pop(); }
+        if(indent > stack[stack.length-1]){ html+=open; stack.push(indent); }
         else { html+='</li>'; }
       }
       html+='<li>'+m[2];
     } else {
-      while(stack.length){ html+='</li></ul>'; stack.pop(); }
+      while(stack.length){ html+=closeli; stack.pop(); }
       if(ln.trim()) html+='<p>'+ln+'</p>';
     }
   }
-  while(stack.length){ html+='</li></ul>'; stack.pop(); }
+  while(stack.length){ html+=closeli; stack.pop(); }
   return html;
 }
-function section(title, html){ return '<div class="card sec"><h2>'+title+'</h2><div class="md">'+html+'</div></div>'; }
+function section(title, inner, cls){ return '<div class="card sec"><h2>'+title+'</h2><div class="'+(cls||'md')+'">'+inner+'</div></div>'; }
+function boldify(t){ return t.replace(/\*\*(.+?)\*\*/g,'<strong>$1</strong>'); }
+
+// To-do: распарсить Markdown-таблицу -> строки данных [Задача, Ответственный, Срок]
+function parseTodo(s){
+  const lines = String(s||'').split('\n').map(l => l.trim()).filter(l => l.indexOf('|') >= 0);
+  let rows = lines.map(l => l.replace(/^\|/,'').replace(/\|$/,'').split('|').map(c => c.trim()))
+                  .filter(c => !c.every(x => /^[-:\s]*$/.test(x)));   // выкинуть строку-разделитель |---|
+  if(rows.length > 1 && /задач|ответствен|срок/i.test(rows[0].join(' '))) rows = rows.slice(1);
+  return rows;
+}
+function renderTodo(s){
+  const rows = parseTodo(s);
+  if(!rows.length) return '<div class="md">'+md(s)+'</div>';   // не таблица -> как было
+  const cell = t => boldify(esc(t||''));
+  let h = '<table class="todo"><thead><tr><th>№</th><th>Задача</th><th>Ответственный</th><th>Срок</th></tr></thead><tbody>';
+  rows.forEach((c,i) => { h += '<tr><td class="num">'+(i+1)+'</td><td>'+cell(c[0])+'</td><td>'+cell(c[1]||'—')+'</td><td>'+cell(c[2]||'—')+'</td></tr>'; });
+  return h + '</tbody></table>';
+}
+// Нумерация bullet-строк для txt (Follow-up)
+function followupTxt(s){
+  let n=0;
+  return String(s||'').split('\n').map(l => { const m=l.match(/^(\s*)[-•*]\s+(.*)$/); if(m){ n++; return m[1]+n+'. '+m[2]; } return l; }).join('\n');
+}
+// To-do для txt: № + колонки через ' — '
+function todoTxt(s){
+  const rows=parseTodo(s); if(!rows.length) return s;
+  return rows.map((c,i) => (i+1)+'. '+(c[0]||'')+' — '+(c[1]||'—')+' — '+(c[2]||'—')).join('\n');
+}
 
 function speakers(){ return [...new Set((RES.segments||[]).map(s=>s.speaker))]; }
 function nameOf(sp){ return MAP[sp] || sp; }
@@ -150,16 +192,45 @@ function transcript(withTs){
 }
 
 function buildTxt(){
-  let t = transcript(showTs);
-  for(const [k,title] of [['summary','САММАРИ'],['follow_up','FOLLOW-UP'],['todo','TO-DO']])
-    if(RES[k]) t += '\n\n===== '+title+' =====\n' + applyMap(RES[k]);
-  return t;
+  const parts = [];
+  if(RES.summary)   parts.push('===== САММАРИ =====\n' + applyMap(RES.summary));
+  if(RES.follow_up) parts.push('===== FOLLOW-UP =====\n' + followupTxt(applyMap(RES.follow_up)));
+  if(RES.todo)      parts.push('===== TO-DO =====\n' + todoTxt(applyMap(RES.todo)));
+  parts.push('===== ТРАНСКРИПТ =====\n' + transcript(showTs));   // диаризация — после секций
+  return parts.join('\n\n');
 }
 function buildJson(){
-  const segs = (RES.segments||[]).map(u => ({...u, speaker: nameOf(u.speaker)}));
-  const o = { segments: segs, text: transcript(true) };
+  const o = {};
   for(const k of ['summary','follow_up','todo']) if(RES[k]) o[k] = applyMap(RES[k]);
+  o.segments = (RES.segments||[]).map(u => ({...u, speaker: nameOf(u.speaker)}));
+  o.text = transcript(true);
   return JSON.stringify(o, null, 2);
+}
+function buildHtml(){
+  let body = '';
+  if(RES.summary)   body += '<h2>Саммари</h2><div class="sum">'+md(applyMap(RES.summary),'ul')+'</div>';
+  if(RES.follow_up) body += '<h2>Follow-up</h2><div class="fu">'+md(applyMap(RES.follow_up),'ol')+'</div>';
+  if(RES.todo)      body += '<h2>To-do</h2>'+renderTodo(applyMap(RES.todo));
+  body += '<h2>Транскрипт</h2><pre class="tr">'+esc(transcript(showTs))+'</pre>';
+  const css = 'body{font:15px/1.6 -apple-system,Segoe UI,Roboto,Arial,sans-serif;color:#111;max-width:820px;margin:24px auto;padding:0 16px}'
+    +'h2{color:#1a5fd0;border-bottom:1px solid #ddd;padding-bottom:5px;margin-top:28px}'
+    +'ul{list-style:none;padding-left:0}ul ul{padding-left:18px}'
+    +'li{position:relative;padding-left:16px;margin:3px 0}li::before{content:"-";position:absolute;left:2px;color:#888}'
+    +'.sum>ul>li{padding-left:0}.sum>ul>li::before{content:none}'
+    +'.fu ol{padding-left:26px;list-style:decimal}.fu li{padding-left:0;margin:4px 0}.fu li::before{content:none}'
+    +'table{border-collapse:collapse;width:100%;font-size:14px}th,td{border:1px solid #ccc;padding:7px 10px;text-align:left;vertical-align:top}th{background:#f0f3fa}'
+    +'pre.tr{white-space:pre-wrap;word-break:break-word;background:#f7f8fa;border:1px solid #e0e0e0;border-radius:6px;padding:12px;font-size:13px}';
+  return '<!doctype html><html lang="ru"><head><meta charset="utf-8"><title>Диаризация</title><style>'+css+'</style></head><body>'+body+'</body></html>';
+}
+async function downloadDocx(){
+  const data = { timestamps: showTs, segments: (RES.segments||[]).map(u => ({...u, speaker: nameOf(u.speaker)})) };
+  for(const k of ['summary','follow_up','todo']) if(RES[k]) data[k] = applyMap(RES[k]);
+  try {
+    const r = await fetch('/v1/export/docx', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(data) });
+    if(!r.ok){ alert('Ошибка экспорта DOCX: '+r.status); return; }
+    const blob = await r.blob();
+    const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'diarization.docx'; a.click(); URL.revokeObjectURL(a.href);
+  } catch(e){ alert('Сбой экспорта DOCX: '+e); }
 }
 function download(name, content, type){
   const b = new Blob([content], {type}); const a = document.createElement('a');
@@ -176,11 +247,13 @@ function render(){
           + '<button id="applyNames">Применить имена</button>'
           + '<label class="opt"><input type="checkbox" id="tsDisp"'+(showTs?' checked':'')+'> тайм-коды</label>'
           + '<button class="ghost" id="dlTxt">⬇ .txt</button>'
+          + '<button class="ghost" id="dlHtml">⬇ .html</button>'
+          + '<button class="ghost" id="dlDocx">⬇ .docx</button>'
           + '<button class="ghost" id="dlJson">⬇ .json</button></div></div>';
   }
-  if(RES.summary)   html += section('📋 Саммари', md(applyMap(RES.summary)));
-  if(RES.follow_up) html += section('🔎 Follow-up', md(applyMap(RES.follow_up)));
-  if(RES.todo)      html += section('✅ To-do', md(applyMap(RES.todo)));
+  if(RES.summary)   html += section('📋 Саммари', md(applyMap(RES.summary), 'ul'), 'md sum');
+  if(RES.follow_up) html += section('🔎 Follow-up', md(applyMap(RES.follow_up), 'ol'), 'md fu');
+  if(RES.todo)      html += section('✅ To-do', renderTodo(applyMap(RES.todo)), 'tdwrap');
   html += '<div class="card sec"><h2>📝 Транскрипт</h2><pre class="transcript">'+esc(transcript(showTs))+'</pre></div>';
   $('result').innerHTML = html;
 
@@ -191,6 +264,8 @@ function render(){
   };
   const td = $('tsDisp'); if(td) td.onchange = () => { showTs = td.checked; render(); };
   const dt = $('dlTxt'); if(dt) dt.onclick = () => download('diarization.txt', buildTxt(), 'text/plain;charset=utf-8');
+  const dh = $('dlHtml'); if(dh) dh.onclick = () => download('diarization.html', buildHtml(), 'text/html;charset=utf-8');
+  const dx = $('dlDocx'); if(dx) dx.onclick = downloadDocx;
   const dj = $('dlJson'); if(dj) dj.onclick = () => download('diarization.json', buildJson(), 'application/json');
 }
 

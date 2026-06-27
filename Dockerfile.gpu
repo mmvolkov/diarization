@@ -11,10 +11,12 @@ RUN apt-get update \
 
 WORKDIR /app
 
+# Тяжёлые слои отдельно и ДО requirements.txt — добавление мелких зависимостей
+# больше не пересобирает torch/onnxruntime (слои берутся из кеша).
+RUN pip3 install --no-cache-dir torch torchaudio
+RUN pip3 install --no-cache-dir onnxruntime-gpu
 COPY requirements.txt .
-RUN pip3 install --no-cache-dir torch torchaudio \
-    && pip3 install --no-cache-dir onnxruntime-gpu \
-    && pip3 install --no-cache-dir -r requirements.txt
+RUN pip3 install --no-cache-dir -r requirements.txt
 
 COPY app ./app
 

@@ -38,9 +38,11 @@
   .md li { position:relative; padding-left:16px; margin:3px 0; }
   .md li::before { content:"-"; position:absolute; left:2px; color:var(--muted); }
   .md p { margin:6px 0; }
-  /* Саммари: у заголовков верхнего уровня маркера нет (подпункты — с «-») */
-  .md.sum > ul > li { padding-left:0; }
-  .md.sum > ul > li::before { content:none; }
+  /* Саммари: жирные заголовки + подпункты с жирной точкой */
+  .sum .sh { font-weight:700; margin:12px 0 4px; }
+  .sum ul.si { list-style:none; margin:2px 0 8px; padding-left:18px; }
+  .sum ul.si li { position:relative; padding-left:16px; margin:3px 0; }
+  .sum ul.si li::before { content:"•"; position:absolute; left:0; color:var(--fg); font-weight:700; }
   /* Follow-up: нумерация */
   .md.fu ol { list-style:decimal; margin:6px 0; padding-left:26px; }
   .md.fu li { padding-left:0; margin:4px 0; }
@@ -123,6 +125,7 @@ $('themeBtn').onclick = () => setTheme(document.body.classList.contains('light')
 let RES = null;     // ответ сервера
 let MAP = {};       // SPEAKER_xx -> имя
 let showTs = true;  // показывать тайм-коды в выводе
+let BASE = 'diarization';  // имя исходного файла без расширения (для имён выгрузок)
 
 function esc(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 function md(s, listTag){
@@ -152,6 +155,23 @@ function md(s, listTag){
 }
 function section(title, inner, cls){ return '<div class="card sec"><h2>'+title+'</h2><div class="'+(cls||'md')+'">'+inner+'</div></div>'; }
 function boldify(t){ return t.replace(/\*\*(.+?)\*\*/g,'<strong>$1</strong>'); }
+
+// Саммари: строка целиком жирная (**...**) -> заголовок; остальные -> подпункты списком (•)
+function renderSummary(s){
+  const lines = esc(s).split('\n');
+  let html=''; let open=false;
+  const close = () => { if(open){ html+='</ul>'; open=false; } };
+  for(const raw of lines){
+    const ln = raw.trim();
+    if(!ln) continue;
+    const h = ln.match(/^\*\*(.+?)\*\*:?\s*$/);
+    if(h){ close(); html += '<p class="sh"><strong>'+h[1]+'</strong></p>'; continue; }
+    if(!open){ html += '<ul class="si">'; open=true; }
+    html += '<li>'+boldify(ln.replace(/^[-•*]\s+/,''))+'</li>';
+  }
+  close();
+  return html;
+}
 
 // To-do: распарсить Markdown-таблицу -> строки данных [Задача, Ответственный, Срок]
 function parseTodo(s){
@@ -208,7 +228,7 @@ function buildJson(){
 }
 function buildHtml(){
   let body = '';
-  if(RES.summary)   body += '<h2>Саммари</h2><div class="sum">'+md(applyMap(RES.summary),'ul')+'</div>';
+  if(RES.summary)   body += '<h2>Саммари</h2><div class="sum">'+renderSummary(applyMap(RES.summary))+'</div>';
   if(RES.follow_up) body += '<h2>Follow-up</h2><div class="fu">'+md(applyMap(RES.follow_up),'ol')+'</div>';
   if(RES.todo)      body += '<h2>To-do</h2>'+renderTodo(applyMap(RES.todo));
   body += '<h2>Транскрипт</h2><pre class="tr">'+esc(transcript(showTs))+'</pre>';
@@ -216,7 +236,7 @@ function buildHtml(){
     +'h2{color:#1a5fd0;border-bottom:1px solid #ddd;padding-bottom:5px;margin-top:28px}'
     +'ul{list-style:none;padding-left:0}ul ul{padding-left:18px}'
     +'li{position:relative;padding-left:16px;margin:3px 0}li::before{content:"-";position:absolute;left:2px;color:#888}'
-    +'.sum>ul>li{padding-left:0}.sum>ul>li::before{content:none}'
+    +'.sum .sh{font-weight:700;margin:12px 0 4px}.sum ul.si{list-style:none;padding-left:18px;margin:2px 0 8px}.sum ul.si li{position:relative;padding-left:16px;margin:3px 0}.sum ul.si li::before{content:"•";position:absolute;left:0;font-weight:700}'
     +'.fu ol{padding-left:26px;list-style:decimal}.fu li{padding-left:0;margin:4px 0}.fu li::before{content:none}'
     +'table{border-collapse:collapse;width:100%;font-size:14px}th,td{border:1px solid #ccc;padding:7px 10px;text-align:left;vertical-align:top}th{background:#f0f3fa}'
     +'pre.tr{white-space:pre-wrap;word-break:break-word;background:#f7f8fa;border:1px solid #e0e0e0;border-radius:6px;padding:12px;font-size:13px}';
@@ -229,7 +249,7 @@ async function downloadDocx(){
     const r = await fetch('/v1/export/docx', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(data) });
     if(!r.ok){ alert('Ошибка экспорта DOCX: '+r.status); return; }
     const blob = await r.blob();
-    const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'diarization.docx'; a.click(); URL.revokeObjectURL(a.href);
+    const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = BASE+'_diarization.docx'; a.click(); URL.revokeObjectURL(a.href);
   } catch(e){ alert('Сбой экспорта DOCX: '+e); }
 }
 function download(name, content, type){
@@ -251,7 +271,7 @@ function render(){
           + '<button class="ghost" id="dlDocx">⬇ .docx</button>'
           + '<button class="ghost" id="dlJson">⬇ .json</button></div></div>';
   }
-  if(RES.summary)   html += section('📋 Саммари', md(applyMap(RES.summary), 'ul'), 'md sum');
+  if(RES.summary)   html += section('📋 Саммари', renderSummary(applyMap(RES.summary)), 'sum');
   if(RES.follow_up) html += section('🔎 Follow-up', md(applyMap(RES.follow_up), 'ol'), 'md fu');
   if(RES.todo)      html += section('✅ To-do', renderTodo(applyMap(RES.todo)), 'tdwrap');
   html += '<div class="card sec"><h2>📝 Транскрипт</h2><pre class="transcript">'+esc(transcript(showTs))+'</pre></div>';
@@ -263,16 +283,17 @@ function render(){
     render();
   };
   const td = $('tsDisp'); if(td) td.onchange = () => { showTs = td.checked; render(); };
-  const dt = $('dlTxt'); if(dt) dt.onclick = () => download('diarization.txt', buildTxt(), 'text/plain;charset=utf-8');
-  const dh = $('dlHtml'); if(dh) dh.onclick = () => download('diarization.html', buildHtml(), 'text/html;charset=utf-8');
+  const dt = $('dlTxt'); if(dt) dt.onclick = () => download(BASE+'_diarization.txt', buildTxt(), 'text/plain;charset=utf-8');
+  const dh = $('dlHtml'); if(dh) dh.onclick = () => download(BASE+'_diarization.html', buildHtml(), 'text/html;charset=utf-8');
   const dx = $('dlDocx'); if(dx) dx.onclick = downloadDocx;
-  const dj = $('dlJson'); if(dj) dj.onclick = () => download('diarization.json', buildJson(), 'application/json');
+  const dj = $('dlJson'); if(dj) dj.onclick = () => download(BASE+'_diarization.json', buildJson(), 'application/json');
 }
 
 let timer = null;
 $('go').onclick = async () => {
   const file = $('file').files[0];
   if(!file){ $('status').innerHTML = '<span class="err">Выберите файл</span>'; return; }
+  BASE = (file.name || 'diarization').replace(/\.[^.]+$/, '') || 'diarization';
   showTs = $('timestamps').checked;
   MAP = {};
 

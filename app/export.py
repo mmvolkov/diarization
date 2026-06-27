@@ -35,6 +35,19 @@ def _add_md(doc, text: str, numbered: bool = False) -> None:
             _add_runs(doc.add_paragraph(), line.strip())
 
 
+def _add_summary(doc, text: str) -> None:
+    """Саммари: строка целиком жирная (**...**) → заголовок группы; остальные → пункты списком."""
+    for line in (text or "").split("\n"):
+        s = line.strip()
+        if not s:
+            continue
+        h = re.match(r"^\*\*(.+?)\*\*:?\s*$", s)
+        if h:
+            doc.add_paragraph().add_run(h.group(1)).bold = True
+        else:
+            _add_runs(doc.add_paragraph(style="List Bullet"), re.sub(r"^[-•*]\s+", "", s))
+
+
 def _parse_todo(text: str):
     rows = []
     for line in (text or "").split("\n"):
@@ -72,7 +85,7 @@ def build_docx(data: dict) -> bytes:
     doc = Document()
     if data.get("summary"):
         doc.add_heading("Саммари", level=1)
-        _add_md(doc, data["summary"])
+        _add_summary(doc, data["summary"])
     if data.get("follow_up"):
         doc.add_heading("Follow-up", level=1)
         _add_md(doc, data["follow_up"], numbered=True)

@@ -12,12 +12,27 @@
 ## API
 
 ```
-POST /v1/diarize    multipart: file, model(gigaam|parakeet), mode(auto|stereo|mono), response_format(json|text)
+POST /v1/diarize    multipart, см. параметры ниже
 GET  /v1/models
 GET  /health
 ```
 
+Параметры `/v1/diarize`:
+
+| Поле | Значения | По умолчанию | Назначение |
+|---|---|---|---|
+| `file` | аудио/видео | — | вход |
+| `mode` | `auto` / `stereo` / `mono` | `auto` | способ диаризации |
+| `model` | `gigaam` / `parakeet` | `gigaam` | ASR |
+| `response_format` | `json` / `text` | `json` | формат ответа |
+| `merge_speakers` | bool | `true` | слить подряд идущие реплики одного спикера |
+| `timestamps` | bool | `true` | показывать тайм-коды в тексте |
+| `summary` | bool | `false` | саммари (LLM) |
+| `follow_up` | bool | `false` | follow-up: открытые вопросы (LLM) |
+| `todo` | bool | `false` | to-do: задачи/действия (LLM) |
+
 `mode=auto`: 2+ независимых канала → стерео-режим; иначе моно + pyannote.
+`summary`/`follow_up`/`todo` используют серверный LLM (`gpt-oss-120b`); в JSON приходят как поля `summary`/`follow_up`/`todo`, в `text` — секциями в конце.
 
 Пример:
 ```bash

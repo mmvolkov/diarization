@@ -16,9 +16,9 @@ import time
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import PlainTextResponse
+from fastapi.responses import FileResponse, PlainTextResponse
 
-from app import asr, pipeline
+from app import asr, llm, pipeline
 
 VERSION = "0.1.0"
 
@@ -82,10 +82,12 @@ def _mmss(sec: float) -> str:
     return f"{int(sec // 60):02d}:{int(sec % 60):02d}"
 
 
-def _render(utts: list[dict]) -> str:
-    return "\n".join(
-        f"[{_mmss(u['start'])}-{_mmss(u['end'])}] {u['speaker']}: {u['text']}" for u in utts
-    )
+def _render(utts: list[dict], timestamps: bool = True) -> str:
+    lines = []
+    for u in utts:
+        prefix = f"[{_mmss(u['start'])}-{_mmss(u['end'])}] " if timestamps else ""
+        lines.append(f"{prefix}{u['speaker']}: {u['text']}")
+    return "\n".join(lines)
 
 
 @app.on_event("startup")
@@ -100,6 +102,12 @@ def _startup() -> None:
         diarize.warmup()
     except Exception as e:
         print(f"[startup] diarization warmup failed: {e}", flush=True)
+
+
+@app.get("/", include_in_schema=False)
+async def index():
+    # Простой веб-интерфейс (загрузка файла + опции постобработки). Отдаётся на корне домена.
+    return FileResponse(Path(__file__).parent / "index.html")
 
 
 @app.get("/health")
@@ -128,6 +136,11 @@ async def diarize_endpoint(
     model: str = Form("gigaam"),
     mode: str = Form("auto"),
     response_format: str = Form("json"),
+    merge_speakers: bool = Form(True),   # слить подряд идущие реплики одного спикера
+    timestamps: bool = Form(True),       # показывать тайм-коды в text-выводе
+    summary: bool = Form(False),         # LLM: саммари
+    follow_up: bool = Form(False),       # LLM: follow-up (открытые вопросы)
+    todo: bool = Form(False),            # LLM: to-do (задачи)
 ):
     rf = (response_format or "json").strip().lower()
     if rf not in {"json", "text"}:
@@ -167,6 +180,17 @@ async def diarize_endpoint(
         if tmp_path and os.path.exists(tmp_path):
             os.unlink(tmp_path)
 
+    if merge_speakers:
+        utts = pipeline.merge_consecutive(utts)
+
+    text = _render(utts, timestamps)
+    analysis = llm.analyze(utts, summary=summary, follow_up=follow_up, todo=todo) \
+        if (summary or follow_up or todo) else {}
+
     if rf == "text":
-        return PlainTextResponse(_render(utts))
-    return {"segments": utts, "text": _render(utts)}
+        body = text
+        for key, title in (("summary", "САММАРИ"), ("follow_up", "FOLLOW-UP"), ("todo", "TO-DO")):
+            if key in analysis:
+                body += f"\n\n===== {title} =====\n{analysis[key]}"
+        return PlainTextResponse(body)
+    return {"segments": utts, "text": text, **analysis}

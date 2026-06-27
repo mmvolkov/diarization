@@ -1,0 +1,226 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Диаризация — Softline</title>
+<style>
+  :root { --bg:#0f1420; --card:#172033; --input:#0e1626; --muted:#8aa0c0; --fg:#e7eefc; --acc:#4f8cff; --line:#26324a; }
+  body.light { --bg:#f3f5f9; --card:#ffffff; --input:#f0f3fa; --muted:#5a6b86; --fg:#13203a; --acc:#2f6bff; --line:#e0e6f0; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:15px/1.5 -apple-system,Segoe UI,Roboto,Arial,sans-serif; transition:background .2s,color .2s; }
+  .wrap { max-width:920px; margin:0 auto; padding:24px 16px 64px; }
+  .head { display:flex; align-items:center; justify-content:space-between; gap:12px; }
+  h1 { font-size:22px; margin:8px 0 4px; }
+  .sub { color:var(--muted); margin:0 0 20px; font-size:13px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:18px; margin-bottom:16px; }
+  label { display:block; font-size:13px; color:var(--muted); margin:0 0 6px; }
+  input[type=text], input[type=password], input[type=text], select, .spk input {
+    width:100%; padding:10px 12px; background:var(--input); color:var(--fg);
+    border:1px solid var(--line); border-radius:8px; font-size:14px; }
+  input[type=file] { width:100%; color:var(--muted); }
+  .row { display:flex; gap:14px; flex-wrap:wrap; }
+  .row > div { flex:1; min-width:160px; }
+  .opts { display:flex; gap:18px 22px; flex-wrap:wrap; margin-top:6px; }
+  .opt { display:flex; align-items:center; gap:7px; color:var(--fg); font-size:14px; }
+  .opt input { width:16px; height:16px; accent-color:var(--acc); }
+  button { background:var(--acc); color:#fff; border:0; padding:11px 20px; border-radius:8px; font-size:15px; font-weight:600; cursor:pointer; }
+  button.ghost { background:transparent; border:1px solid var(--line); color:var(--fg); font-weight:500; padding:9px 14px; font-size:14px; }
+  button.icon { background:transparent; border:1px solid var(--line); color:var(--fg); padding:8px 12px; font-size:18px; }
+  button:disabled { opacity:.5; cursor:not-allowed; }
+  .status { margin:14px 0 0; color:var(--muted); font-size:14px; }
+  .err { color:#ff7a7a; }
+  .sec h2 { font-size:15px; margin:0 0 8px; color:var(--acc); border-bottom:1px solid var(--line); padding-bottom:6px; }
+  pre.transcript { white-space:pre-wrap; word-break:break-word; max-height:420px; overflow:auto;
+    background:var(--input); border:1px solid var(--line); border-radius:8px; padding:12px; font-size:13px; margin:0; }
+  .md ul { margin:6px 0; padding-left:22px; } .md li { margin:3px 0; } .md p { margin:6px 0; }
+  .hint { font-size:12px; color:var(--muted); margin-top:6px; }
+  .bar { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+  .spk { display:flex; gap:12px; flex-wrap:wrap; }
+  .spk > div { flex:1; min-width:170px; }
+  .spk label { font-family:ui-monospace,Consolas,monospace; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="head">
+    <div>
+      <h1>🎙️ Диаризация совещаний и звонков</h1>
+      <p class="sub">Загрузите аудио/видео — транскрипт «кто и когда», саммари, follow-up и to-do.</p>
+    </div>
+    <button class="icon" id="themeBtn" title="Сменить тему">☀️</button>
+  </div>
+
+  <div class="card">
+    <div style="margin-bottom:14px">
+      <label>API-ключ</label>
+      <input type="password" id="key" placeholder="di_..." autocomplete="off">
+      <div class="hint">Хранится только в этом браузере (localStorage).</div>
+    </div>
+
+    <div style="margin-bottom:14px">
+      <label>Файл (mp3, wav, m4a, mp4 …)</label>
+      <input type="file" id="file" accept="audio/*,video/*">
+    </div>
+
+    <div class="row" style="margin-bottom:12px">
+      <div>
+        <label>Режим</label>
+        <select id="mode">
+          <option value="auto">auto — определить автоматически</option>
+          <option value="mono">mono — совещание (pyannote)</option>
+          <option value="stereo">stereo — звонок (по каналам)</option>
+        </select>
+      </div>
+      <div>
+        <label>ASR-модель</label>
+        <select id="model">
+          <option value="gigaam">gigaam (рус.)</option>
+          <option value="parakeet">parakeet</option>
+        </select>
+      </div>
+    </div>
+
+    <label>Постобработка</label>
+    <div class="opts">
+      <label class="opt"><input type="checkbox" id="merge_speakers" checked> слить реплики спикера</label>
+      <label class="opt"><input type="checkbox" id="timestamps" checked> тайм-коды</label>
+      <label class="opt"><input type="checkbox" id="summary"> саммари</label>
+      <label class="opt"><input type="checkbox" id="follow_up"> follow-up</label>
+      <label class="opt"><input type="checkbox" id="todo"> to-do</label>
+    </div>
+
+    <div class="bar" style="margin-top:18px">
+      <button id="go">Обработать</button>
+      <span class="status" id="status"></span>
+    </div>
+  </div>
+
+  <div id="result"></div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+
+// --- тема ---
+function setTheme(t){ document.body.classList.toggle('light', t==='light'); localStorage.setItem('diar_theme', t); $('themeBtn').textContent = t==='light' ? '🌙' : '☀️'; }
+setTheme(localStorage.getItem('diar_theme') || 'dark');
+$('themeBtn').onclick = () => setTheme(document.body.classList.contains('light') ? 'dark' : 'light');
+
+$('key').value = localStorage.getItem('diar_key') || '';
+
+let RES = null;     // ответ сервера
+let MAP = {};       // SPEAKER_xx -> имя
+let showTs = true;  // показывать тайм-коды в выводе
+
+function esc(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+function md(s){
+  const lines = esc(s).replace(/\*\*(.+?)\*\*/g,'<strong>$1</strong>').split('\n');
+  let out=[], inUl=false;
+  for(const ln of lines){
+    const m = ln.match(/^\s*[-•*]\s+(.*)$/);
+    if(m){ if(!inUl){out.push('<ul>');inUl=true;} out.push('<li>'+m[1]+'</li>'); }
+    else { if(inUl){out.push('</ul>');inUl=false;} if(ln.trim()) out.push('<p>'+ln+'</p>'); }
+  }
+  if(inUl) out.push('</ul>');
+  return out.join('');
+}
+function section(title, html){ return '<div class="card sec"><h2>'+title+'</h2><div class="md">'+html+'</div></div>'; }
+
+function speakers(){ return [...new Set((RES.segments||[]).map(s=>s.speaker))]; }
+function nameOf(sp){ return MAP[sp] || sp; }
+function applyMap(text){ let t=String(text||''); for(const sp of speakers()){ if(MAP[sp]) t=t.split(sp).join(MAP[sp]); } return t; }
+function mmss(x){ const s=Math.floor(x||0); return String(Math.floor(s/60)).padStart(2,'0')+':'+String(s%60).padStart(2,'0'); }
+function transcript(withTs){
+  return (RES.segments||[]).map(u=>{
+    const p = withTs ? '['+mmss(u.start)+'-'+mmss(u.end)+'] ' : '';
+    return p + nameOf(u.speaker) + ': ' + u.text;
+  }).join('\n');
+}
+
+function buildTxt(){
+  let t = transcript(showTs);
+  for(const [k,title] of [['summary','САММАРИ'],['follow_up','FOLLOW-UP'],['todo','TO-DO']])
+    if(RES[k]) t += '\n\n===== '+title+' =====\n' + applyMap(RES[k]);
+  return t;
+}
+function buildJson(){
+  const segs = (RES.segments||[]).map(u => ({...u, speaker: nameOf(u.speaker)}));
+  const o = { segments: segs, text: transcript(true) };
+  for(const k of ['summary','follow_up','todo']) if(RES[k]) o[k] = applyMap(RES[k]);
+  return JSON.stringify(o, null, 2);
+}
+function download(name, content, type){
+  const b = new Blob([content], {type}); const a = document.createElement('a');
+  a.href = URL.createObjectURL(b); a.download = name; a.click(); URL.revokeObjectURL(a.href);
+}
+
+function render(){
+  let html = '';
+  const sp = speakers();
+  if(sp.length){
+    html += '<div class="card sec"><h2>🧑 Спикеры — назначьте имена</h2><div class="spk">';
+    for(const s of sp) html += '<div><label>'+esc(s)+'</label><input data-sp="'+esc(s)+'" value="'+esc(MAP[s]||'')+'" placeholder="имя / роль"></div>';
+    html += '</div><div class="bar" style="margin-top:12px">'
+          + '<button id="applyNames">Применить имена</button>'
+          + '<label class="opt"><input type="checkbox" id="tsDisp"'+(showTs?' checked':'')+'> тайм-коды</label>'
+          + '<button class="ghost" id="dlTxt">⬇ .txt</button>'
+          + '<button class="ghost" id="dlJson">⬇ .json</button></div></div>';
+  }
+  if(RES.summary)   html += section('📋 Саммари', md(applyMap(RES.summary)));
+  if(RES.follow_up) html += section('🔎 Follow-up', md(applyMap(RES.follow_up)));
+  if(RES.todo)      html += section('✅ To-do', md(applyMap(RES.todo)));
+  html += '<div class="card sec"><h2>📝 Транскрипт</h2><pre class="transcript">'+esc(transcript(showTs))+'</pre></div>';
+  $('result').innerHTML = html;
+
+  const an = $('applyNames');
+  if(an) an.onclick = () => {
+    document.querySelectorAll('[data-sp]').forEach(i => { const v=i.value.trim(); if(v) MAP[i.dataset.sp]=v; else delete MAP[i.dataset.sp]; });
+    render();
+  };
+  const td = $('tsDisp'); if(td) td.onchange = () => { showTs = td.checked; render(); };
+  const dt = $('dlTxt'); if(dt) dt.onclick = () => download('diarization.txt', buildTxt(), 'text/plain;charset=utf-8');
+  const dj = $('dlJson'); if(dj) dj.onclick = () => download('diarization.json', buildJson(), 'application/json');
+}
+
+let timer = null;
+$('go').onclick = async () => {
+  const key = $('key').value.trim();
+  const file = $('file').files[0];
+  if(!file){ $('status').innerHTML = '<span class="err">Выберите файл</span>'; return; }
+  localStorage.setItem('diar_key', key);
+  showTs = $('timestamps').checked;
+  MAP = {};
+
+  const fd = new FormData();
+  fd.append('file', file);
+  fd.append('mode', $('mode').value);
+  fd.append('model', $('model').value);
+  for(const k of ['merge_speakers','timestamps','summary','follow_up','todo'])
+    fd.append(k, $(k).checked ? 'true' : 'false');
+  fd.append('response_format', 'json');
+
+  $('go').disabled = true; $('result').innerHTML = '';
+  const t0 = Date.now();
+  timer = setInterval(() => { $('status').textContent = 'Обработка… ' + Math.round((Date.now()-t0)/1000) + ' с'; }, 500);
+
+  try {
+    const r = await fetch('/v1/diarize', { method:'POST', headers: key ? {'Authorization':'Bearer '+key} : {}, body: fd });
+    clearInterval(timer);
+    if(!r.ok){
+      let d=''; try{ d=(await r.json()).detail; }catch(e){ d=r.statusText; }
+      $('status').innerHTML = '<span class="err">Ошибка '+r.status+': '+esc(d)+'</span>';
+      $('go').disabled=false; return;
+    }
+    RES = await r.json();
+    $('status').textContent = 'Готово за ' + Math.round((Date.now()-t0)/1000) + ' с · реплик: ' + (RES.segments?.length||0);
+    render();
+  } catch(e){
+    clearInterval(timer);
+    $('status').innerHTML = '<span class="err">Сбой запроса: '+esc(e)+'</span>';
+  }
+  $('go').disabled = false;
+};
+</script>
+</body>
+</html>

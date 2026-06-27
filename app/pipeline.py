@@ -22,6 +22,18 @@ from app.asr import Word, as_wav
 GAP = 1.0  # сек: пауза внутри реплики одного спикера
 
 
+def merge_consecutive(utts: list[dict]) -> list[dict]:
+    """Слить подряд идущие реплики одного спикера в один блок (постобработка)."""
+    out: list[dict] = []
+    for u in utts:
+        if out and out[-1]["speaker"] == u["speaker"]:
+            out[-1]["text"] += " " + u["text"]
+            out[-1]["end"] = u["end"]
+        else:
+            out.append(dict(u))
+    return out
+
+
 def _group(words: list[Word], speaker_fn) -> list[dict]:
     utts: list[dict] = []
     for w in words:

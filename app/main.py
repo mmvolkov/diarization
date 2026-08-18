@@ -289,6 +289,10 @@ async def diarize_endpoint(
     model: str = Form("gigaam"),
     provider: str = Form("local"),     # local (наша карта) | mws (облако)
     speakers: bool = Form(True),       # false — просто расшифровка, pyannote не поднимается
+    num_speakers: int = Form(0),       # точное число участников (0 — определить самому)
+    min_speakers: int = Form(0),       # либо диапазон: от…
+    max_speakers: int = Form(0),       # …до
+    exclusive: bool = Form(True),      # exclusive-диаризация: один говорящий в момент времени
     mode: str = Form("auto"),
     response_format: str = Form("json"),
     merge_speakers: bool = Form(True),   # слить подряд идущие реплики одного спикера
@@ -323,7 +327,13 @@ async def diarize_endpoint(
             raise HTTPException(status_code=500, detail=f"Failed to load ASR model '{model}': {e}") from e
 
         try:
-            utts = pipeline.diarize_file(tmp_path, asr_obj, mode=md, speakers=speakers)
+            utts = pipeline.diarize_file(
+                tmp_path, asr_obj, mode=md, speakers=speakers,
+                num_speakers=num_speakers or None,
+                min_speakers=min_speakers or None,
+                max_speakers=max_speakers or None,
+                exclusive=exclusive,
+            )
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Diarization failed: {e}") from e
     finally:

@@ -98,6 +98,10 @@
         <label>ASR-модель</label>
         <select id="model"></select>
       </div>
+      <div>
+        <label>Спикеров <span style="opacity:.6">— «2» или «2-6», пусто = определить самому</span></label>
+        <input type="text" id="nspk" placeholder="авто" inputmode="numeric">
+      </div>
     </div>
 
     <label>Постобработка</label>
@@ -397,6 +401,11 @@ $('go').onclick = async () => {
   fd.append('mode', $('mode').value);
   fd.append('model', $('model').value);
   fd.append('provider', $('provider').value);
+  // «2» → точное число, «2-6» → диапазон; пусто — pyannote решает сам
+  const ns = ($('nspk').value || '').trim();
+  const range = ns.match(/^(\d+)\s*[-–]\s*(\d+)$/);
+  if(range){ fd.append('min_speakers', range[1]); fd.append('max_speakers', range[2]); }
+  else if(/^\d+$/.test(ns)){ fd.append('num_speakers', ns); }
   for(const k of ['speakers','merge_speakers','timestamps','summary','follow_up','todo'])
     fd.append(k, $(k).checked ? 'true' : 'false');
   fd.append('response_format', 'json');

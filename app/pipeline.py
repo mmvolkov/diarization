@@ -37,10 +37,10 @@ def merge_consecutive(utts: list[dict]) -> list[dict]:
     return out
 
 
-def _group(words: list[Word], speaker_fn) -> list[dict]:
+def _group(words: list[Word], speakers) -> list[dict]:
+    """Склеить слова в реплики. speakers — спикер для каждого слова, по порядку."""
     utts: list[dict] = []
-    for w in words:
-        spk = speaker_fn(w)
+    for w, spk in zip(words, speakers):
         if utts and utts[-1]["speaker"] == spk and w.start - utts[-1]["end"] <= GAP:
             utts[-1]["text"] += " " + w.text
             utts[-1]["end"] = w.end
@@ -110,7 +110,9 @@ def _plain_text(path: str, asr_obj) -> list[dict]:
     return [{"speaker": "", "start": 0.0, "end": dur, "text": text.strip()}]
 
 
-def diarize_file(path: str, asr_obj, mode: str = "auto", speakers: bool = True) -> list[dict]:
+def diarize_file(path: str, asr_obj, mode: str = "auto", speakers: bool = True,
+                 num_speakers: int | None = None, min_speakers: int | None = None,
+                 max_speakers: int | None = None, exclusive: bool = True) -> list[dict]:
     if not speakers:
         return _plain_text(path, asr_obj)
 
@@ -128,7 +130,8 @@ def diarize_file(path: str, asr_obj, mode: str = "auto", speakers: bool = True) 
             spk = f"Канал {ch + 1}"
             with as_wav(path, channel=ch) as wav:
                 if asr_obj.supports_words:
-                    utts += _group(asr_obj.words(wav), lambda w, s=spk: s)
+                    words = asr_obj.words(wav)
+                    utts += _group(words, [spk] * len(words))
                 else:
                     # провайдер без тайм-кодов: канал целиком = одна реплика
                     text = asr_obj.transcribe(wav).strip()
@@ -144,8 +147,9 @@ def diarize_file(path: str, asr_obj, mode: str = "auto", speakers: bool = True) 
     from app import models_state
     with as_wav(path) as wav:
         models_state.get_diarizer()
-        turns = diarize.turns_of(wav)
+        turns = diarize.turns_of(wav, num_speakers=num_speakers, min_speakers=min_speakers,
+                                 max_speakers=max_speakers, exclusive=exclusive)
         if asr_obj.supports_words:
             words = asr_obj.words(wav)
-            return _group(words, lambda w: diarize.speaker_of(w.start, w.end, turns))
+            return _group(words, diarize.assign_speakers(words, turns))
         return _turn_texts(wav, turns, asr_obj)

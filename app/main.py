@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import os
+import subprocess
 import tempfile
 import time
 from pathlib import Path
@@ -18,7 +19,7 @@ from pathlib import Path
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, PlainTextResponse, RedirectResponse, Response
 
-from app import asr, auth, llm, pipeline
+from app import asr, auth, llm, models_state, pipeline
 
 _APP = Path(__file__).parent
 
@@ -31,19 +32,40 @@ ASR_MODELS = {
 DEFAULT_MODEL = os.getenv("DIARIZE_DEFAULT_MODEL", "gigaam").strip().lower()
 MAX_UPLOAD_BYTES = int(os.getenv("MAX_UPLOAD_BYTES", str(1024 * 1024 * 1024)))
 
+# Облачный ASR MWS: список моделей и доступ задаются в .env.
+MWS_BASE_URL = os.getenv("MWS_BASE_URL", "").strip()
+MWS_API_KEY = os.getenv("MWS_API_KEY", "").strip()
+MWS_MODELS = [m.strip() for m in os.getenv("MWS_MODELS", "").split(",") if m.strip()]
+MWS_DEFAULT_MODEL = os.getenv("MWS_DEFAULT_MODEL", "").strip() or (MWS_MODELS[0] if MWS_MODELS else "")
+MWS_TIMEOUT = float(os.getenv("MWS_TIMEOUT", "600"))
+DEFAULT_PROVIDER = os.getenv("ASR_PROVIDER_DEFAULT", "local").strip().lower()
+
 app = FastAPI(title="Diarization", version=VERSION)
-_ASR: dict[str, asr.Asr] = {}
+
+
+def _mws_enabled() -> bool:
+    return bool(MWS_BASE_URL and MWS_API_KEY and MWS_MODELS)
 
 
 def _default_model() -> str:
     return DEFAULT_MODEL if DEFAULT_MODEL in ASR_MODELS else "gigaam"
 
 
-def _get_asr(name: str) -> asr.Asr:
+def _default_provider() -> str:
+    if DEFAULT_PROVIDER == "mws" and _mws_enabled():
+        return "mws"
+    return "local"
+
+
+def _get_asr(name: str, provider: str = "local"):
+    """ASR-провайдер. local — ленивая загрузка на GPU, mws — HTTP, память не держит."""
+    if provider == "mws":
+        if not _mws_enabled():
+            raise HTTPException(status_code=400, detail="MWS не настроен: задайте MWS_BASE_URL/MWS_API_KEY/MWS_MODELS")
+        model = name if name in MWS_MODELS else MWS_DEFAULT_MODEL
+        return asr.MwsAsr(model, MWS_BASE_URL, MWS_API_KEY, MWS_TIMEOUT)
     key = name if name in ASR_MODELS else _default_model()
-    if key not in _ASR:
-        _ASR[key] = asr.Asr(ASR_MODELS[key])
-    return _ASR[key]
+    return models_state.get_asr(key, ASR_MODELS[key])
 
 
 def _onnx_providers() -> list[str]:
@@ -95,22 +117,39 @@ def _render(utts: list[dict], timestamps: bool = True) -> str:
     lines = []
     for u in utts:
         prefix = f"[{_mmss(u['start'])}-{_mmss(u['end'])}] " if timestamps else ""
-        lines.append(f"{prefix}{u['speaker']}: {u['text']}")
+        # без диаризации спикера нет — не печатаем пустой «: »
+        who = f"{u['speaker']}: " if u.get("speaker") else ""
+        lines.append(f"{prefix}{who}{u['text']}")
     return "\n".join(lines)
+
+
+async def _save_upload(file: UploadFile) -> str:
+    """Сохранить загруженный файл во временный, с проверкой лимита размера."""
+    ext = Path(file.filename or "audio").suffix or ".bin"
+    size = 0
+    with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as tmp:
+        path = tmp.name
+        while True:
+            chunk = await file.read(1024 * 1024)
+            if not chunk:
+                break
+            size += len(chunk)
+            if size > MAX_UPLOAD_BYTES:
+                tmp.close()
+                os.unlink(path)
+                raise HTTPException(status_code=413, detail="Uploaded file is too large")
+            tmp.write(chunk)
+    return path
 
 
 @app.on_event("startup")
 def _startup() -> None:
-    print(f"[startup] device={_device()} providers={_onnx_providers()}", flush=True)
-    try:
-        _get_asr(_default_model())
-    except Exception as e:
-        print(f"[startup] asr warmup failed: {e}", flush=True)
-    try:
-        from app import diarize
-        diarize.warmup()
-    except Exception as e:
-        print(f"[startup] diarization warmup failed: {e}", flush=True)
+    # Локальные модели намеренно НЕ греем: они занимают видеопамять и поднимаются
+    # только когда в интерфейсе выбран локальный провайдер (см. app/models_state.py).
+    print(f"[startup] device={_device()} providers={_onnx_providers()} "
+          f"default_provider={_default_provider()} mws={'on' if _mws_enabled() else 'off'} "
+          f"idle_unload={models_state.IDLE_UNLOAD_S}s", flush=True)
+    models_state.start_sweeper()
 
 
 @app.get("/", include_in_schema=False)
@@ -149,18 +188,33 @@ async def health():
         "status": "ok",
         "version": VERSION,
         "default_model": _default_model(),
+        "default_provider": _default_provider(),
+        "mws": _mws_enabled(),
         "device": _device(),
         "providers": _onnx_providers(),
+        "loaded": models_state.loaded(),
     }
 
 
 @app.get("/v1/models", dependencies=[Depends(verify_auth)])
 async def list_models():
     now = int(time.time())
+    data = [{"id": n, "object": "model", "created": now, "owned_by": "local", "provider": "local"}
+            for n in ASR_MODELS]
+    data += [{"id": n, "object": "model", "created": now, "owned_by": "mws", "provider": "mws"}
+             for n in (MWS_MODELS if _mws_enabled() else [])]
     return {
         "object": "list",
-        "data": [{"id": n, "object": "model", "created": now, "owned_by": "local"} for n in ASR_MODELS],
+        "data": data,
+        "defaults": {"provider": _default_provider(), "local": _default_model(), "mws": MWS_DEFAULT_MODEL},
     }
+
+
+@app.post("/v1/models/unload", dependencies=[Depends(verify_auth)])
+async def unload_models():
+    """Немедленно выгрузить локальные модели и вернуть видеопамять."""
+    freed = models_state.unload_all()
+    return {"unloaded": freed, "loaded": models_state.loaded()}
 
 
 @app.post("/v1/export/docx", dependencies=[Depends(verify_auth)])
@@ -175,10 +229,66 @@ async def export_docx(request: Request):
     )
 
 
+@app.post("/v1/test", dependencies=[Depends(verify_auth)])
+async def test_endpoint(
+    file: UploadFile = File(...),
+    provider: str = Form("local"),
+    model: str = Form(""),
+    seconds: int = Form(30),
+):
+    """Пробная расшифровка первых N секунд загруженного файла выбранным провайдером.
+
+    Проверяет весь путь целиком: доступ (ключ/сеть для MWS либо загрузку модели на
+    GPU для local), саму модель и качество на реальном материале. Диаризацию не
+    трогает — она проверяется полным прогоном.
+    """
+    pv = (provider or "local").strip().lower()
+    if pv not in {"local", "mws"}:
+        raise HTTPException(status_code=400, detail="provider must be one of: local, mws")
+    seconds = max(5, min(int(seconds or 30), 120))
+
+    src = await _save_upload(file)
+    cut = None
+    try:
+        if not asr.has_audio_stream(src):
+            raise HTTPException(status_code=400, detail="Uploaded file has no audio track")
+        cut = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
+        cut.close()
+        subprocess.run(
+            ["ffmpeg", "-v", "error", "-t", str(seconds), "-i", src,
+             "-ar", "16000", "-ac", "1", "-y", cut.name],
+            check=True, capture_output=True,
+        )
+        t0 = time.time()
+        try:
+            asr_obj = _get_asr(model, pv)
+            text = asr_obj.transcribe(cut.name)
+        except HTTPException:
+            raise
+        except Exception as e:
+            return {"ok": False, "provider": pv, "model": model,
+                    "elapsed": round(time.time() - t0, 2), "error": str(e)}
+        return {
+            "ok": True,
+            "provider": pv,
+            "model": getattr(asr_obj, "model_name", model or _default_model()),
+            "seconds": seconds,
+            "elapsed": round(time.time() - t0, 2),
+            "text": text,
+            "loaded": models_state.loaded(),
+        }
+    finally:
+        for p in (src, cut.name if cut else None):
+            if p and os.path.exists(p):
+                os.unlink(p)
+
+
 @app.post("/v1/diarize", dependencies=[Depends(verify_auth)])
 async def diarize_endpoint(
     file: UploadFile = File(...),
     model: str = Form("gigaam"),
+    provider: str = Form("local"),     # local (наша карта) | mws (облако)
+    speakers: bool = Form(True),       # false — просто расшифровка, pyannote не поднимается
     mode: str = Form("auto"),
     response_format: str = Form("json"),
     merge_speakers: bool = Form(True),   # слить подряд идущие реплики одного спикера
@@ -194,31 +304,26 @@ async def diarize_endpoint(
     if md not in {"auto", "stereo", "mono"}:
         raise HTTPException(status_code=400, detail="mode must be one of: auto, stereo, mono")
 
-    ext = Path(file.filename or "audio").suffix or ".bin"
+    pv = (provider or "local").strip().lower()
+    if pv not in {"local", "mws"}:
+        raise HTTPException(status_code=400, detail="provider must be one of: local, mws")
+
     tmp_path = None
-    size = 0
     try:
-        with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as tmp:
-            tmp_path = tmp.name
-            while True:
-                chunk = await file.read(1024 * 1024)
-                if not chunk:
-                    break
-                size += len(chunk)
-                if size > MAX_UPLOAD_BYTES:
-                    raise HTTPException(status_code=413, detail="Uploaded file is too large")
-                tmp.write(chunk)
+        tmp_path = await _save_upload(file)
 
         if not asr.has_audio_stream(tmp_path):
             raise HTTPException(status_code=400, detail="Uploaded file has no audio track")
 
         try:
-            asr_obj = _get_asr(model)
+            asr_obj = _get_asr(model, pv)
+        except HTTPException:
+            raise
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Failed to load ASR model '{model}': {e}") from e
 
         try:
-            utts = pipeline.diarize_file(tmp_path, asr_obj, mode=md)
+            utts = pipeline.diarize_file(tmp_path, asr_obj, mode=md, speakers=speakers)
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Diarization failed: {e}") from e
     finally:

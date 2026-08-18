@@ -34,6 +34,12 @@ def warmup() -> None:
     _pipeline()
 
 
+def unload() -> None:
+    """Отпустить pipeline, чтобы освободить видеопамять (см. app/models_state.py)."""
+    global _pipe
+    _pipe = None
+
+
 def turns_of(wav_path: str):
     """pyannote -> [(start, end, speaker)] для моно-16к WAV."""
     samples, sr = sf.read(wav_path, dtype="float32")

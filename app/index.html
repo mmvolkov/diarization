@@ -88,16 +88,21 @@
         </select>
       </div>
       <div>
-        <label>ASR-модель</label>
-        <select id="model">
-          <option value="gigaam">gigaam (рус.)</option>
-          <option value="parakeet">parakeet</option>
+        <label>Где считаем</label>
+        <select id="provider">
+          <option value="local">локально — наша карта (GPU)</option>
+          <option value="mws">MWS — облако</option>
         </select>
+      </div>
+      <div>
+        <label>ASR-модель</label>
+        <select id="model"></select>
       </div>
     </div>
 
     <label>Постобработка</label>
     <div class="opts">
+      <label class="opt"><input type="checkbox" id="speakers" checked> определять спикеров (pyannote, GPU)</label>
       <label class="opt"><input type="checkbox" id="merge_speakers" checked> слить реплики спикера</label>
       <label class="opt"><input type="checkbox" id="timestamps" checked> тайм-коды</label>
       <label class="opt"><input type="checkbox" id="summary"> саммари</label>
@@ -107,8 +112,11 @@
 
     <div class="bar" style="margin-top:18px">
       <button id="go">Обработать</button>
+      <button class="ghost" id="test" title="Расшифровать первые 30 секунд выбранным провайдером">Тест</button>
+      <button class="ghost" id="unload" title="Выгрузить локальные модели и вернуть видеопамять">Выгрузить модели</button>
       <span class="status" id="status"></span>
     </div>
+    <div class="status" id="loaded" style="margin-top:8px"></div>
   </div>
 
   <div id="result"></div>
@@ -289,6 +297,93 @@ function render(){
   const dj = $('dlJson'); if(dj) dj.onclick = () => download(BASE+'_diarization.json', buildJson(), 'application/json');
 }
 
+// --- провайдеры, модели, состояние памяти ---
+let MODELS = { local: [], mws: [] }, DEFAULTS = {};
+
+function fillModels(){
+  const pv = $('provider').value;
+  const list = MODELS[pv] || [];
+  $('model').innerHTML = list.map(m => '<option value="'+esc(m)+'">'+esc(m)+'</option>').join('')
+    || '<option value="">— нет моделей —</option>';
+  const def = pv === 'mws' ? DEFAULTS.mws : DEFAULTS.local;
+  if(def && list.includes(def)) $('model').value = def;
+}
+
+async function loadModels(){
+  try {
+    const r = await fetch('/v1/models');
+    if(!r.ok) return;
+    const d = await r.json();
+    MODELS = { local: [], mws: [] };
+    for(const m of d.data || []) (MODELS[m.provider] = MODELS[m.provider] || []).push(m.id);
+    DEFAULTS = d.defaults || {};
+    if(!MODELS.mws.length){
+      $('provider').querySelector('option[value=mws]').disabled = true;
+      $('provider').querySelector('option[value=mws]').textContent = 'MWS — не настроен в .env';
+    }
+    if(DEFAULTS.provider) $('provider').value = DEFAULTS.provider;
+    fillModels();
+  } catch(e){}
+}
+
+async function refreshLoaded(){
+  try {
+    const r = await fetch('/health');
+    const d = await r.json();
+    const l = d.loaded || {};
+    const parts = [];
+    if((l.asr||[]).length) parts.push('ASR: ' + l.asr.join(', '));
+    if(l.diarizer) parts.push('pyannote');
+    $('loaded').textContent = parts.length
+      ? 'В памяти GPU: ' + parts.join(' · ') + (l.idle_seconds != null ? ' · простой ' + l.idle_seconds + ' с из ' + l.idle_unload_seconds : '')
+      : 'В памяти GPU: ничего (локальные модели грузятся по требованию)';
+  } catch(e){}
+}
+
+$('provider').onchange = fillModels;
+loadModels(); refreshLoaded();
+setInterval(refreshLoaded, 30000);
+
+$('unload').onclick = async () => {
+  $('unload').disabled = true;
+  $('status').textContent = 'Выгружаю…';
+  try {
+    const r = await fetch('/v1/models/unload', { method:'POST' });
+    const d = await r.json();
+    const u = d.unloaded || {};
+    $('status').textContent = (u.asr||[]).length || u.diarizer ? 'Модели выгружены, память освобождена' : 'Выгружать было нечего';
+  } catch(e){ $('status').innerHTML = '<span class="err">Сбой: '+esc(e)+'</span>'; }
+  $('unload').disabled = false;
+  refreshLoaded();
+};
+
+$('test').onclick = async () => {
+  const file = $('file').files[0];
+  if(!file){ $('status').innerHTML = '<span class="err">Выберите файл — тест идёт по первым 30 секундам</span>'; return; }
+  const fd = new FormData();
+  fd.append('file', file);
+  fd.append('provider', $('provider').value);
+  fd.append('model', $('model').value);
+  fd.append('seconds', '30');
+
+  $('test').disabled = true;
+  const t0 = Date.now();
+  $('status').textContent = 'Тест…';
+  try {
+    const r = await fetch('/v1/test', { method:'POST', body: fd });
+    const d = await r.json();
+    if(!r.ok || d.ok === false){
+      $('status').innerHTML = '<span class="err">Тест не прошёл: '+esc(d.detail || d.error || r.status)+'</span>';
+    } else {
+      $('status').textContent = 'Тест ок · ' + d.provider + '/' + d.model + ' · ' + d.elapsed + ' с на ' + d.seconds + ' с аудио';
+      $('result').innerHTML = '<div class="card"><b>Тест: первые ' + d.seconds + ' секунд</b><div style="margin-top:10px; white-space:pre-wrap">'
+        + esc(d.text || '(пусто)') + '</div></div>';
+    }
+  } catch(e){ $('status').innerHTML = '<span class="err">Сбой запроса: '+esc(e)+'</span>'; }
+  $('test').disabled = false;
+  refreshLoaded();
+};
+
 let timer = null;
 $('go').onclick = async () => {
   const file = $('file').files[0];
@@ -301,7 +396,8 @@ $('go').onclick = async () => {
   fd.append('file', file);
   fd.append('mode', $('mode').value);
   fd.append('model', $('model').value);
-  for(const k of ['merge_speakers','timestamps','summary','follow_up','todo'])
+  fd.append('provider', $('provider').value);
+  for(const k of ['speakers','merge_speakers','timestamps','summary','follow_up','todo'])
     fd.append(k, $(k).checked ? 'true' : 'false');
   fd.append('response_format', 'json');
 

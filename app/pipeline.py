@@ -20,6 +20,9 @@ from app import asr, diarize
 from app.asr import Word, as_wav
 
 GAP = 1.0  # сек: пауза внутри реплики одного спикера
+MIN_TURN_S = 0.4  # короче — не отправляем в облачный ASR (вздохи, поддакивания)
+TURN_PAD_S = 0.25  # подушка по краям реплики при нарезке для облачного ASR
+REMOTE_CONCURRENCY = int(os.getenv("REMOTE_CONCURRENCY", "8"))
 
 
 def merge_consecutive(utts: list[dict]) -> list[dict]:
@@ -69,7 +72,48 @@ def _channels_independent(src: str, probe_s: int = 120) -> bool:
             os.unlink(tmp.name)
 
 
-def diarize_file(path: str, asr_obj: asr.Asr, mode: str = "auto") -> list[dict]:
+def _turn_texts(wav: str, turns, asr_obj) -> list[dict]:
+    """Реплики через провайдера без тайм-кодов (MWS): режем wav по turn'ам pyannote.
+
+    Каждый кусок — отдельный запрос, поэтому шлём пулом потоков. Слишком короткие
+    turn'ы (вздохи, поддакивания) пропускаем: запрос стоит дороже пользы.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    samples, sr = sf.read(wav, dtype="float32")
+    jobs = [(i, ts, te, spk) for i, (ts, te, spk) in enumerate(turns) if te - ts >= MIN_TURN_S]
+
+    def run(job):
+        i, ts, te, spk = job
+        # подушка по краям: на точной границе turn'а срезается первый/последний
+        # звук («прикрепил» → «крепил»), поэтому режем чуть шире, а тайм-коды
+        # оставляем исходные
+        a = max(0, int((ts - TURN_PAD_S) * sr))
+        b = min(len(samples), int((te + TURN_PAD_S) * sr))
+        chunk = samples[a:b]
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, f"t{i}.wav")
+            sf.write(p, chunk, sr)
+            text = asr_obj.transcribe(p)
+        return {"speaker": spk, "start": ts, "end": te, "text": text.strip()}
+
+    with ThreadPoolExecutor(max_workers=REMOTE_CONCURRENCY) as pool:
+        utts = list(pool.map(run, jobs))
+    return [u for u in utts if u["text"]]
+
+
+def _plain_text(path: str, asr_obj) -> list[dict]:
+    """Без диаризации: один запрос на весь файл, одна «реплика» без спикера."""
+    with as_wav(path) as wav:
+        text = asr_obj.transcribe(wav)
+        dur = float(sf.info(wav).duration)
+    return [{"speaker": "", "start": 0.0, "end": dur, "text": text.strip()}]
+
+
+def diarize_file(path: str, asr_obj, mode: str = "auto", speakers: bool = True) -> list[dict]:
+    if not speakers:
+        return _plain_text(path, asr_obj)
+
     n = asr.channel_count(path)
     if mode == "stereo":
         use_channels = n >= 2
@@ -81,15 +125,27 @@ def diarize_file(path: str, asr_obj: asr.Asr, mode: str = "auto") -> list[dict]:
     if use_channels:
         utts: list[dict] = []
         for ch in range(n):
-            with as_wav(path, channel=ch) as wav:
-                words = asr_obj.words(wav)
             spk = f"Канал {ch + 1}"
-            utts += _group(words, lambda w, s=spk: s)
+            with as_wav(path, channel=ch) as wav:
+                if asr_obj.supports_words:
+                    utts += _group(asr_obj.words(wav), lambda w, s=spk: s)
+                else:
+                    # провайдер без тайм-кодов: канал целиком = одна реплика
+                    text = asr_obj.transcribe(wav).strip()
+                    if text:
+                        utts.append({"speaker": spk, "start": 0.0,
+                                     "end": float(sf.info(wav).duration), "text": text})
         utts.sort(key=lambda u: u["start"])
         return utts
 
-    # mono: pyannote + выравнивание слов по turn'ам
+    # mono: pyannote даёт «кто/когда».
+    # Поднимаем его ЧЕРЕЗ models_state, иначе загруженная модель не попадёт под
+    # учёт и сторож простоя никогда её не выгрузит (видеопамять останется занятой).
+    from app import models_state
     with as_wav(path) as wav:
+        models_state.get_diarizer()
         turns = diarize.turns_of(wav)
-        words = asr_obj.words(wav)
-    return _group(words, lambda w: diarize.speaker_of(w.start, w.end, turns))
+        if asr_obj.supports_words:
+            words = asr_obj.words(wav)
+            return _group(words, lambda w: diarize.speaker_of(w.start, w.end, turns))
+        return _turn_texts(wav, turns, asr_obj)

@@ -19,6 +19,8 @@ import soundfile as sf
 
 SR = 16000
 WINDOW_S = 30.0
+MIN_CHUNK_S = 0.3  # окна короче — не подаём в ONNX (падает STFT)
+MWS_MAX_UPLOAD_BYTES = int(float(os.getenv("MWS_MAX_UPLOAD_MB", "24")) * 1048576)
 
 
 @dataclass
@@ -65,6 +67,23 @@ def as_wav(path: str, channel: int | None = None):
             os.unlink(tmp.name)
 
 
+@contextmanager
+def as_mp3(path: str, bitrate: str = "32k"):
+    """Сжать в моно-mp3: облачные ASR ограничивают размер загрузки."""
+    tmp = tempfile.NamedTemporaryFile(suffix=".mp3", delete=False)
+    tmp.close()
+    try:
+        subprocess.run(
+            ["ffmpeg", "-v", "error", "-i", path, "-vn", "-ac", "1", "-ar", str(SR),
+             "-c:a", "libmp3lame", "-b:a", bitrate, "-y", tmp.name],
+            check=True, capture_output=True,
+        )
+        yield tmp.name
+    finally:
+        if os.path.exists(tmp.name):
+            os.unlink(tmp.name)
+
+
 def tokens_to_words(tokens, timestamps) -> list[Word]:
     """Склеить subword-токены в слова. Граница слова — токен с ведущим пробелом/▁."""
     words: list[Word] = []
@@ -87,6 +106,8 @@ def tokens_to_words(tokens, timestamps) -> list[Word]:
 class Asr:
     """GigaAM/Parakeet через onnx-asr; отдаёт слова с тайм-кодами."""
 
+    supports_words = True
+
     def __init__(self, model_name: str = "gigaam-v3-e2e-rnnt"):
         import onnx_asr
         self._ts = onnx_asr.load_model(model_name).with_timestamps()
@@ -96,14 +117,61 @@ class Asr:
         samples, sr = sf.read(wav_path, dtype="float32")
         out: list[Word] = []
         step = int(window_s * sr)
+        min_chunk = int(MIN_CHUNK_S * sr)
         with tempfile.TemporaryDirectory() as d:
             for i in range(0, len(samples), step):
+                chunk = samples[i:i + step]
+                # хвостовое окно может оказаться в пару миллисекунд — на таком
+                # ONNX-STFT падает (RUNTIME_EXCEPTION на узле n5), пропускаем
+                if len(chunk) < min_chunk:
+                    continue
                 off = i / sr
                 cpath = os.path.join(d, f"c{i}.wav")
-                sf.write(cpath, samples[i:i + step], sr)
+                sf.write(cpath, chunk, sr)
                 res = self._ts.recognize(cpath)
                 if not getattr(res, "tokens", None) or not getattr(res, "timestamps", None):
                     continue
                 for w in tokens_to_words(res.tokens, res.timestamps):
                     out.append(Word(w.start + off, w.end + off, w.text))
         return out
+
+    def transcribe(self, wav_path: str) -> str:
+        """Сплошной текст без разметки по спикерам (склейка слов)."""
+        return " ".join(w.text for w in self.words(wav_path))
+
+
+class MwsAsr:
+    """Облачный ASR MWS (OpenAI-совместимый /audio/transcriptions).
+
+    Тайм-коды по словам не отдаёт ни одна из его моделей (gigaam-v3 возвращает
+    один сегмент на весь файл), поэтому выравнивание по спикерам делается не
+    здесь, а в pipeline: аудио режется по turn'ам pyannote и каждый кусок
+    распознаётся отдельным запросом.
+    """
+
+    supports_words = False
+
+    def __init__(self, model_name: str, base_url: str, api_key: str, timeout: float = 600.0):
+        from openai import OpenAI
+        if not api_key:
+            raise RuntimeError("MWS_API_KEY не задан")
+        self.model_name = model_name
+        self._client = OpenAI(base_url=base_url, api_key=api_key, timeout=timeout)
+
+    def transcribe(self, wav_path: str) -> str:
+        # 16-кГц WAV на час записи — это ~115 МБ, столько облако не принимает
+        # («Payload Too Large»), поэтому перед отправкой всегда жмём в mp3.
+        with as_mp3(wav_path) as path:
+            size = os.path.getsize(path)
+            if size > MWS_MAX_UPLOAD_BYTES:
+                raise RuntimeError(
+                    f"файл {size // 1048576} МБ больше лимита облака "
+                    f"({MWS_MAX_UPLOAD_BYTES // 1048576} МБ) — используйте локальный провайдер "
+                    f"или разбейте запись"
+                )
+            with open(path, "rb") as f:
+                r = self._client.audio.transcriptions.create(model=self.model_name, file=f)
+        return (getattr(r, "text", "") or "").strip()
+
+    def words(self, wav_path: str, window_s: float = WINDOW_S) -> list[Word]:
+        raise NotImplementedError("MWS не отдаёт тайм-коды по словам")

@@ -20,6 +20,7 @@ from app import asr, diarize
 from app.asr import Word, as_wav
 
 GAP = 1.0  # сек: пауза внутри реплики одного спикера
+LOW_CONF = float(os.getenv("LOW_CONF", "0.6"))  # ниже — слово помечаем как ненадёжное
 MIN_TURN_S = 0.4  # короче — не отправляем в облачный ASR (вздохи, поддакивания)
 TURN_PAD_S = 0.25  # подушка по краям реплики при нарезке для облачного ASR
 REMOTE_CONCURRENCY = int(os.getenv("REMOTE_CONCURRENCY", "8"))
@@ -38,14 +39,31 @@ def merge_consecutive(utts: list[dict]) -> list[dict]:
 
 
 def _group(words: list[Word], speakers) -> list[dict]:
-    """Склеить слова в реплики. speakers — спикер для каждого слова, по порядку."""
+    """Склеить слова в реплики. speakers — спикер для каждого слова, по порядку.
+
+    Если ASR отдал уверенность (Word.conf), реплика несёт её агрегаты и список
+    ненадёжных слов — потребителю видно, что именно стоит перепроверить.
+    """
     utts: list[dict] = []
+    bag: list[list[Word]] = []  # слова каждой реплики — для агрегатов уверенности
     for w, spk in zip(words, speakers):
         if utts and utts[-1]["speaker"] == spk and w.start - utts[-1]["end"] <= GAP:
             utts[-1]["text"] += " " + w.text
             utts[-1]["end"] = w.end
+            bag[-1].append(w)
         else:
             utts.append({"speaker": spk, "start": w.start, "end": w.end, "text": w.text})
+            bag.append([w])
+    for u, ws in zip(utts, bag):
+        confs = [w.conf for w in ws if w.conf is not None]
+        if not confs:
+            continue
+        u["conf_avg"] = round(sum(confs) / len(confs), 3)
+        u["conf_min"] = round(min(confs), 3)
+        low = [{"text": w.text, "start": round(w.start, 2), "conf": round(w.conf, 3)}
+               for w in ws if w.conf is not None and w.conf < LOW_CONF]
+        if low:
+            u["low_conf_words"] = low
     return utts
 
 

@@ -27,6 +27,9 @@ VERSION = "0.1.0"
 
 ASR_MODELS = {
     "gigaam": os.getenv("GIGAAM_MODEL", "gigaam-v3-e2e-rnnt").strip(),
+    # raw-вариант без e2e-нормализации: e2e «причёсывает» редкие имена собственные
+    # («Крост» → «Кросс»), raw их сохраняет — годится для сверки имён.
+    "gigaam-raw": os.getenv("GIGAAM_RAW_MODEL", "gigaam-v3-rnnt").strip(),
     "parakeet": os.getenv("PARAKEET_MODEL", "nemo-parakeet-tdt-0.6b-v3").strip(),
 }
 DEFAULT_MODEL = os.getenv("DIARIZE_DEFAULT_MODEL", "gigaam").strip().lower()

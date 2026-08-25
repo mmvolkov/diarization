@@ -18,7 +18,12 @@ from dataclasses import dataclass
 import soundfile as sf
 
 SR = 16000
-WINDOW_S = 30.0
+# GigaAM обучалась на записях до 30 с, а .transcribe официально держит до 25 с:
+# рабочий диапазон сегмента в апстриме — 15–22 с, 30 с там аварийный потолок.
+# Поэтому режем короче и по паузам (см. speech_chunks), а не фиксированным окном.
+WINDOW_S = float(os.getenv("ASR_WINDOW_S", "22.0"))
+CHUNK_MIN_S = float(os.getenv("ASR_CHUNK_MIN_S", "15.0"))
+CHUNK_HARD_S = float(os.getenv("ASR_CHUNK_HARD_S", "30.0"))
 MIN_CHUNK_S = 0.3  # окна короче — не подаём в ONNX (падает STFT)
 MWS_MAX_UPLOAD_BYTES = int(float(os.getenv("MWS_MAX_UPLOAD_MB", "24")) * 1048576)
 
@@ -28,6 +33,7 @@ class Word:
     start: float
     end: float
     text: str
+    conf: float | None = None  # уверенность ASR: min по токенам слова, 0..1
 
 
 def has_audio_stream(path: str) -> bool:
@@ -84,23 +90,79 @@ def as_mp3(path: str, bitrate: str = "32k"):
             os.unlink(tmp.name)
 
 
-def tokens_to_words(tokens, timestamps) -> list[Word]:
-    """Склеить subword-токены в слова. Граница слова — токен с ведущим пробелом/▁."""
+def tokens_to_words(tokens, timestamps, logprobs=None) -> list[Word]:
+    """Склеить subword-токены в слова. Граница слова — токен с ведущим пробелом/▁.
+
+    logprobs (если модель их отдаёт) сворачиваются в уверенность слова: берём
+    минимум по его токенам — слово настолько надёжно, насколько его слабое место.
+    """
+    import math
+
     words: list[Word] = []
     cur, start, end = "", None, None
-    for tok, ts in zip(tokens, timestamps):
+    cur_lp: list[float] = []
+    lps = list(logprobs) if logprobs is not None else None
+
+    def flush():
+        if cur.strip():
+            conf = math.exp(min(cur_lp)) if cur_lp else None
+            words.append(Word(start, end, cur.strip(), conf))
+
+    for i, (tok, ts) in enumerate(zip(tokens, timestamps)):
+        lp = lps[i] if lps is not None and i < len(lps) else None
         boundary = tok.startswith(" ") or tok.startswith("▁")
         clean = tok.replace("▁", " ")
         if boundary or start is None:
-            if cur.strip():
-                words.append(Word(start, end, cur.strip()))
+            flush()
             cur, start, end = clean, ts, ts
+            cur_lp = [lp] if lp is not None else []
         else:
             cur += clean
             end = ts
-    if cur.strip():
-        words.append(Word(start, end, cur.strip()))
+            if lp is not None:
+                cur_lp.append(lp)
+    flush()
     return words
+
+
+def speech_chunks(samples, sr: int, window_s: float = WINDOW_S,
+                  min_s: float = CHUNK_MIN_S, hard_s: float = CHUNK_HARD_S) -> list[tuple[int, int]]:
+    """Границы кусков для ASR: режем по паузам в диапазоне [min_s, window_s].
+
+    Фиксированное окно рвёт слово на стыке (отсюда «Крост» → «Крос»+«т»).
+    Ищем самую тихую точку в хвосте окна и режем там; если тишины нет —
+    режем принудительно на hard_s (апстримный strict-лимит модели).
+    """
+    import numpy as np
+
+    n = len(samples)
+    if n <= int(window_s * sr):
+        return [(0, n)]
+
+    mono = samples if samples.ndim == 1 else samples.mean(axis=1)
+    win = max(1, int(0.02 * sr))  # окно энергии 20 мс
+    out: list[tuple[int, int]] = []
+    pos = 0
+    while pos < n:
+        target = pos + int(window_s * sr)
+        if target >= n:
+            out.append((pos, n))
+            break
+        lo = pos + int(min_s * sr)                       # раньше не режем
+        hi = min(n, pos + int(hard_s * sr))              # позже — нельзя
+        seg = mono[lo:hi]
+        if len(seg) < win * 2:
+            out.append((pos, hi))
+            pos = hi
+            continue
+        # энергия по 20-мс окнам; самая тихая точка — стык фраз
+        k = len(seg) // win
+        energy = np.abs(seg[:k * win].reshape(k, win)).mean(axis=1)
+        cut = lo + int(energy.argmin()) * win + win // 2
+        cut = max(lo, min(cut, hi))
+        out.append((pos, cut))
+        pos = cut
+    return out
 
 
 class Asr:
@@ -113,16 +175,18 @@ class Asr:
         self._ts = onnx_asr.load_model(model_name).with_timestamps()
 
     def words(self, wav_path: str, window_s: float = WINDOW_S) -> list[Word]:
-        """Распознать моно-16к WAV по окнам, вернуть слова с глобальными тайм-кодами."""
+        """Распознать моно-16к WAV, вернуть слова с тайм-кодами и уверенностью.
+
+        Режем не фиксированным окном, а по паузам (speech_chunks): модель обучена
+        на сегментах до 30 с, и разрыв слова на стыке портит распознавание.
+        """
         samples, sr = sf.read(wav_path, dtype="float32")
         out: list[Word] = []
-        step = int(window_s * sr)
         min_chunk = int(MIN_CHUNK_S * sr)
         with tempfile.TemporaryDirectory() as d:
-            for i in range(0, len(samples), step):
-                chunk = samples[i:i + step]
-                # хвостовое окно может оказаться в пару миллисекунд — на таком
-                # ONNX-STFT падает (RUNTIME_EXCEPTION на узле n5), пропускаем
+            for i, j in speech_chunks(samples, sr, window_s):
+                chunk = samples[i:j]
+                # огрызок в пару миллисекунд — на таком ONNX-STFT падает
                 if len(chunk) < min_chunk:
                     continue
                 off = i / sr
@@ -131,8 +195,9 @@ class Asr:
                 res = self._ts.recognize(cpath)
                 if not getattr(res, "tokens", None) or not getattr(res, "timestamps", None):
                     continue
-                for w in tokens_to_words(res.tokens, res.timestamps):
-                    out.append(Word(w.start + off, w.end + off, w.text))
+                for w in tokens_to_words(res.tokens, res.timestamps,
+                                         getattr(res, "logprobs", None)):
+                    out.append(Word(w.start + off, w.end + off, w.text, w.conf))
         return out
 
     def transcribe(self, wav_path: str) -> str:

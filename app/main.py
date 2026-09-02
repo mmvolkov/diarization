@@ -30,6 +30,12 @@ ASR_MODELS = {
     # raw-вариант без e2e-нормализации: e2e «причёсывает» редкие имена собственные
     # («Крост» → «Кросс»), raw их сохраняет — годится для сверки имён.
     "gigaam-raw": os.getenv("GIGAAM_RAW_MODEL", "gigaam-v3-rnnt").strip(),
+    # ctc-вариант: другой тип декодера. RNNT при неуверенности склонен пропускать
+    # слово целиком, CTC его всё равно выдаёт — третье мнение по редким именам.
+    "gigaam-ctc": os.getenv("GIGAAM_CTC_MODEL", "gigaam-v3-ctc").strip(),
+    # e2e-ctc: нормализация как у основной модели, но CTC-декодер. Держим в реестре
+    # для сравнительных прогонов; в конвейере ai-sales-assistant не используется.
+    "gigaam-e2e-ctc": os.getenv("GIGAAM_E2E_CTC_MODEL", "gigaam-v3-e2e-ctc").strip(),
     "parakeet": os.getenv("PARAKEET_MODEL", "nemo-parakeet-tdt-0.6b-v3").strip(),
 }
 DEFAULT_MODEL = os.getenv("DIARIZE_DEFAULT_MODEL", "gigaam").strip().lower()

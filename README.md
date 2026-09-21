@@ -34,6 +34,7 @@ GET  /health            + что сейчас загружено в память
 | `response_format` | `json` / `text` | `json` | формат ответа |
 | `merge_speakers` | bool | `true` | слить подряд идущие реплики одного спикера |
 | `timestamps` | bool | `true` | показывать тайм-коды в тексте |
+| `words` | bool | `false` | вернуть слова с тайм-кодами внутри каждой реплики (только `provider=local`) |
 | `summary` | bool | `false` | саммари (LLM) |
 | `follow_up` | bool | `false` | follow-up: открытые вопросы (LLM) |
 | `todo` | bool | `false` | to-do: задачи/действия (LLM) |
@@ -48,6 +49,10 @@ curl https://diarization.cloudsmasters.ru/v1/diarize \
   -F "file=@meeting.mp4" -F "mode=auto"
 ```
 Ответ: `{"segments":[{"speaker","start","end","text"}], "text":"[mm:ss-mm:ss] SPEAKER: ..."}`.
+
+С `words=true` каждая реплика дополнительно несёт `words` — `{"text","start","end","conf"}`
+на слово. Это нужно тем, кто строит субтитры или режет видео по словам, а не по репликам;
+у провайдера `mws` пословных тайм-кодов нет, поэтому поле там не появляется.
 
 ## Где считаем: локально или в MWS
 

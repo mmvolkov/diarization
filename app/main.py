@@ -306,6 +306,7 @@ async def diarize_endpoint(
     response_format: str = Form("json"),
     merge_speakers: bool = Form(True),   # слить подряд идущие реплики одного спикера
     timestamps: bool = Form(True),       # показывать тайм-коды в text-выводе
+    words: bool = Form(False),           # слова с тайм-кодами внутри реплик (только provider=local)
     summary: bool = Form(False),         # LLM: саммари
     follow_up: bool = Form(False),       # LLM: follow-up (открытые вопросы)
     todo: bool = Form(False),            # LLM: to-do (задачи)
@@ -351,6 +352,11 @@ async def diarize_endpoint(
 
     if merge_speakers:
         utts = pipeline.merge_consecutive(utts)
+
+    for u in utts:
+        # провайдер без пословных тайм-кодов (mws) слов не даёт: пустой ключ не отдаём
+        if not words or not u.get("words"):
+            u.pop("words", None)
 
     text = _render(utts, timestamps)
     analysis = llm.analyze(utts, summary=summary, follow_up=follow_up, todo=todo) \

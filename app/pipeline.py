@@ -36,16 +36,22 @@ def merge_consecutive(utts: list[dict]) -> list[dict]:
         if out and out[-1]["speaker"] == u["speaker"]:
             out[-1]["text"] += " " + u["text"]
             out[-1]["end"] = u["end"]
+            out[-1]["words"] += u.get("words", [])
         else:
-            out.append(dict(u))
+            block = dict(u)
+            # список слов копируем: иначе слияние правило бы и исходную реплику
+            block["words"] = list(u.get("words", []))
+            out.append(block)
     return out
 
 
 def _group(words: list[Word], speakers) -> list[dict]:
     """Склеить слова в реплики. speakers — спикер для каждого слова, по порядку.
 
-    Если ASR отдал уверенность (Word.conf), реплика несёт её агрегаты и список
-    ненадёжных слов — потребителю видно, что именно стоит перепроверить.
+    Каждая реплика несёт свои слова с тайм-кодами (`words`): по ним строятся
+    пословные субтитры и точная нарезка. Если ASR отдал уверенность (Word.conf),
+    реплика несёт её агрегаты и список ненадёжных слов — потребителю видно,
+    что именно стоит перепроверить.
     """
     utts: list[dict] = []
     bag: list[list[Word]] = []  # слова каждой реплики — для агрегатов уверенности
@@ -58,6 +64,11 @@ def _group(words: list[Word], speakers) -> list[dict]:
             utts.append({"speaker": spk, "start": w.start, "end": w.end, "text": w.text})
             bag.append([w])
     for u, ws in zip(utts, bag):
+        u["words"] = [
+            {"text": w.text, "start": round(w.start, 2), "end": round(w.end, 2),
+             "conf": round(w.conf, 3) if w.conf is not None else None}
+            for w in ws
+        ]
         confs = [w.conf for w in ws if w.conf is not None]
         if not confs:
             continue
